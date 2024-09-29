@@ -1,128 +1,75 @@
-from flask import Flask, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
+from flask import Flask
 from flask_cors import CORS
+import pymysql
 import schedule
-
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root@localhost/flask_app'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-CORS(app)
-
-# Models
-class Patient(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100))
-    age = db.Column(db.Integer)
-    gender = db.Column(db.String(10))
-    contact = db.Column(db.String(100))
-    heart_rate = db.Column(db.Integer)
-    blood_pressure = db.Column(db.String(20))
-    temperature = db.Column(db.Float)
-    symptoms = db.Column(db.String(200))
-
-class Reminder(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'))
-    medication = db.Column(db.String(100))
-    dosage = db.Column(db.String(50))
-    time = db.Column(db.String(50))
-
-class Appointment(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    patient_id = db.Column(db.Integer, db.ForeignKey('patient.id'))
-    doctor_id = db.Column(db.Integer)
-    date = db.Column(db.String(50))
-    time = db.Column(db.String(50))
-
-# Create the database tables
-with app.app_context():
-    db.create_all()
-
-# Routes
-@app.route('/api/patients', methods=['POST'])
-def create_patient():
-    data = request.get_json()
-    new_patient = Patient(
-        name=data['name'],
-        age=data['age'],
-        gender=data['gender'],
-        contact=data['contact'],
-        heart_rate=data['heart_rate'],
-        blood_pressure=data['blood_pressure'],
-        temperature=data['temperature'],
-        symptoms=data['symptoms']
-    )
-    db.session.add(new_patient)
-    db.session.commit()
-    return jsonify({"message": "Patient added successfully!"}), 201
-
-@app.route('/api/patients', methods=['GET'])
-def get_patients():
-    patients = Patient.query.all()
-    return jsonify([{
-        'id': patient.id,
-        'name': patient.name,
-        'age': patient.age,
-        'gender': patient.gender,
-        'contact': patient.contact,
-        'heart_rate': patient.heart_rate,
-        'blood_pressure': patient.blood_pressure,
-        'temperature': patient.temperature,
-        'symptoms': patient.symptoms,
-    } for patient in patients]), 200
-
-@app.route('/api/reminders', methods=['POST'])
-def create_reminder():
-    data = request.get_json()
-    new_reminder = Reminder(
-        patient_id=data['patient_id'],
-        medication=data['medication'],
-        dosage=data['dosage'],
-        time=data['time']
-    )
-    db.session.add(new_reminder)
-    db.session.commit()
-    # Schedule the reminder (using schedule library)
-    schedule_reminder(data['patient_id'], data['medication'], data['dosage'], data['time'])
-    return jsonify({"message": "Reminder set successfully!"}), 201
-
-@app.route('/api/sos', methods=['POST'])
-def send_sos():
-    data = request.get_json()
-    patient = Patient.query.get(data['patient_id'])
-    if not patient:
-        return jsonify({"error": "Patient not found"}), 404
-    # Send SOS alert via Telegram
-    send_telegram_message(patient.contact, f"SOS Alert: {data['message']}")
-    return jsonify({"message": "SOS alert sent!"}), 200
-
-@app.route('/api/appointments', methods=['POST'])
-def book_appointment():
-    data = request.get_json()
-    new_appointment = Appointment(
-        patient_id=data['patient_id'],
-        doctor_id=data['doctor_id'],
-        date=data['date'],
-        time=data['time']
-    )
-    db.session.add(new_appointment)
-    db.session.commit()
-    return jsonify({"message": "Appointment booked successfully!"}), 201
-
-if __name__ == '__main__':
-    app.run(debug=True)
-
 import time
 from threading import Thread
 
-def send_reminder(patient_id, medication, dosage):
+app = Flask(__name__)
+CORS(app)
+
+# Database connection
+def get_db_connection():
+    return pymysql.connect(
+        host='localhost',
+        user='root',
+        password='',
+        db='flask_app',
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+# Create the database tables
+def create_tables():
+    connection = get_db_connection()
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Patient (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100),
+                age INT,
+                gender VARCHAR(10),
+                contact VARCHAR(100),
+                heart_rate INT,
+                blood_pressure VARCHAR(20)
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Reminder (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                patient_id INT,
+                medication VARCHAR(100),
+                dosage VARCHAR(100),
+                time VARCHAR(10),
+                FOREIGN KEY (patient_id) REFERENCES Patient(id)
+            )
+        """)
+    connection.commit()
+    connection.close()
+
+create_tables()
+
+def send_reminder(patient_id, medication, dosage, contact):
     # Logic to send reminder (e.g., via email, SMS, etc.)
     print(f"Reminder: Patient {patient_id} should take {dosage} of {medication}")
+    # Example: send_telegram_message(contact, f"Reminder: Please take {dosage} of {medication}")
 
-def schedule_reminder(patient_id, medication, dosage, reminder_time):
-    # Schedule the reminder
-    schedule.every().day.at(reminder_time).do(send_reminder, patient_id, medication, dosage)
+# Example: send_telegram_message(contact, f"Reminder: Please take {dosage} of {medication}")
+
+def schedule_reminders():
+    connection = get_db_connection()
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT patient_id, medication, dosage, time FROM reminder")
+        reminders = cursor.fetchall()
+        for reminder in reminders:
+            patient_id, medication, dosage, reminder_time = reminder['patient_id'], reminder['medication'], reminder['dosage'], reminder['time']
+            cursor.execute("SELECT contact FROM Patient WHERE id = %s", (patient_id,))
+            patient_contact = cursor.fetchone()
+            if patient_contact:
+                print(f"Scheduling reminder for patient {patient_id} at {reminder_time}")
+                schedule.every().day.at(reminder_time).do(send_reminder, patient_id, medication, dosage, patient_contact['contact'])
+            else:
+                print(f"No contact found for patient {patient_id}")
+    connection.close()
 
     # Start a thread to run the scheduler
     def run_scheduler():
@@ -131,4 +78,92 @@ def schedule_reminder(patient_id, medication, dosage, reminder_time):
             time.sleep(1)
 
     scheduler_thread = Thread(target=run_scheduler)
+    scheduler_thread.daemon = True
     scheduler_thread.start()
+
+schedule_reminders()
+
+
+def send_telegram_message(contact, message):
+    # Logic to send message via Telegram
+    print(f"Telegram message sent to {contact}: {message}")
+
+# Routes
+@app.route('/api/patients', methods=['POST'])
+def create_patient():
+    data = request.get_json()
+    connection = get_db_connection()
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO Patient (name, age, gender, contact, heart_rate, blood_pressure, temperature, symptoms)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (data['name'], data['age'], data['gender'], data['contact'], data['heart_rate'], data['blood_pressure'], data['temperature'], data['symptoms']))
+    connection.commit()
+    connection.close()
+    return jsonify({"message": "Patient added successfully!"}), 201
+
+@app.route('/api/patients', methods=['GET'])
+def get_patients():
+    connection = get_db_connection()
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT * FROM Patient")
+        patients = cursor.fetchall()
+    connection.close()
+    return jsonify(patients), 200
+
+@app.route('/api/reminders', methods=['POST'])
+def create_reminder():
+    data = request.get_json()
+    patient_id = data.get('patient_id')
+    medication = data.get('medication')
+    dosage = data.get('dosage')
+    time = data.get('time')
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            # Check if patient_id exists
+            cursor.execute("SELECT id FROM patient WHERE id = %s", (patient_id,))
+            patient = cursor.fetchone()
+            if not patient:
+                return jsonify({'error': 'Patient ID does not exist'}), 400
+
+            # Insert reminder
+            sql = "INSERT INTO reminder (patient_id, medication, dosage, time) VALUES (%s, %s, %s, %s)"
+            cursor.execute(sql, (patient_id, medication, dosage, time))
+            connection.commit()
+            return jsonify({'message': 'Reminder created successfully'}), 201
+    except pymysql.MySQLError as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        connection.close()
+
+@app.route('/api/sos', methods=['POST'])
+def send_sos():
+    data = request.get_json()
+    connection = get_db_connection()
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT * FROM Patient WHERE id = %s", (data['patient_id'],))
+        patient = cursor.fetchone()
+    connection.close()
+    if not patient:
+        return jsonify({"error": "Patient not found"}), 404
+    # Send SOS alert via Telegram
+    send_telegram_message(patient['contact'], f"SOS Alert: {data['message']}")
+    return jsonify({"message": "SOS alert sent!"}), 200
+
+@app.route('/api/appointments', methods=['POST'])
+def book_appointment():
+    data = request.get_json()
+    connection = get_db_connection()
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO Appointment (patient_id, doctor_id, date, time)
+            VALUES (%s, %s, %s, %s)
+        """, (data['patient_id'], data['doctor_id'], data['date'], data['time']))
+    connection.commit()
+    connection.close()
+    return jsonify({"message": "Appointment booked successfully!"}), 201
+
+if __name__ == '__main__':
+    app.run(debug=True)
